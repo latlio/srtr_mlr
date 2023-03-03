@@ -46,3 +46,5 @@ Note: If running xgboost, change line 75 in RLearner_surv_xgboost.R to your time
 ```eval
 Rscript benchmark.R config_post2018.csv 1 FALSE TRUE 1
 ```
+
+**Step 3** Run make_figures.Rmd
