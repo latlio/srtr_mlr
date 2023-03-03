@@ -19,6 +19,7 @@ Thus, we unfortunately cannot share our data preprocessing script. Please feel f
 ## Running the pipeline
 
 Step 1
+
 Set up your config file. Important columns are:
 
 | Variable | Definition |
@@ -33,12 +34,17 @@ Set up your config file. Important columns are:
 Note: If running xgboost, change line 75 in RLearner_surv_xgboost.R to your time and status variables
 
 Step 2
+
 Run the benchmark pipeline.
 
 1st argument is name of config file
+
 2nd argument is result index, you can leave as 1
+
 3rd argument is impute TRUE/FALSE
+
 4th argumnet is exclude variables listed in Exclusions in config file TRUE/FALSE
+
 5th argument is type of resampling, 1 = nested CV, 0 = single CV
 
 ```eval
