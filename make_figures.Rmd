@@ -1,0 +1,832 @@
+---
+title: "Visualizing Survival ML Performance"
+author: "Lathan Liou"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: 
+  html_document:
+      keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(fs)
+library(cowplot)
+library(ggridges)
+library(forcats)
+library(patchwork)
+all_files <- list.files(path = "results_new",
+                        full.names = TRUE,
+                        pattern = "*.csv")
+all_res <- all_files %>%
+  map(~read_csv(.) %>%
+        janitor::clean_names()) %>%
+  setNames(all_files %>% 
+             str_replace(".csv", "") %>%
+             str_replace("results_new/", ""))
+
+# modify rfsrc df to fit the others, since I had to use a reduced input set of vars
+# full_vars = data.frame(x1 = all_res$cox_1_featsel_$x1)
+# new_rfsrc_featsel <- left_join(full_vars, all_res$rfsrc_1_featsel_,
+#                                by = "x1")
+# all_res$rfsrc_1_featsel_ <- new_rfsrc_featsel
+```
+
+## Comparing Short-Term and Long-Term C-Index
+We may observe a higher C-index in shorter time-to-event cases. To roughly see this, we compare the cross-validated C-index of an SRTR cohort including patients who received transplants on an index date of 1-1-2011 with unaltered follow-up time with that of the same cohort of patients artificially censored after 2 years of follow-up.
+
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+make_perf_df <- function(start) {
+  # retrieve all perf indices
+  ind <- str_which(names(start), "_perf_")
+  ci_wide <- map_dfc(ind, function(ind) start %>% pluck(ind) %>% select(-x1))
+  ci_long <- ci_wide %>%
+    pivot_longer(everything(),
+                 names_to = "model",
+                 values_to = "cindex")
+  ci_long
+}
+
+test_files <- list.files(path = "results_test",
+                         full.names = TRUE,
+                         pattern = "*.csv")
+test_res <- test_files %>%
+  map(~read_csv(.) %>%
+        janitor::clean_names()) %>%
+  setNames(test_files %>% 
+             str_replace(".csv", "") %>%
+             str_replace("results_test/", ""))
+
+make_perf_df(test_res) %>%
+  mutate(model = case_when(
+    model == "cox_ph_scale...1" ~ "Long-Term",
+    model == "cox_ph_scale...2" ~ "Short-Term"
+  )) %>%
+  group_by(model) %>%
+  dplyr::summarize(mean_cindex = mean(cindex, na.rm = TRUE),
+                   sd_cindex = sd(cindex, na.rm = TRUE),
+                   lb_cindex = quantile(cindex, probs = 0.025, na.rm = TRUE),
+                   ub_cindex = quantile(cindex, probs = 0.975, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(mean_cindex))
+```
+
+## C-indices
+
+```{r prep_perf_df}
+make_perf_df <- function(start) {
+  # retrieve all perf indices
+  ind <- str_which(names(start), "_perf_")
+  ci_wide <- map_dfc(ind, function(ind) all_res %>% pluck(ind) %>% select(-x1))
+  ci_long <- ci_wide %>%
+    pivot_longer(everything(),
+                 names_to = "model",
+                 values_to = "cindex")
+  ci_long
+}
+perf_df <- make_perf_df(all_res)
+perf_df$model <- recode(perf_df$model,
+                        rfsrc_scale = "Random Survival Forest",
+                        xgb_tree_scale = "XGBoost Tree",
+                        ridge_scale = "Ridge",
+                        cox_boost_scale = "Cox Boost",
+                        xgb_linear_scale = "XGBoost Linear",
+                        elastic_net_scale = "Elastic Net",
+                        lasso_scale = "Lasso",
+                        cox_ph_scale = "CoxPH")
+```
+
+### Table
+```{r perf_tbl}
+perf_df %>%
+  group_by(model) %>%
+  dplyr::summarize(mean_cindex = mean(cindex, na.rm = TRUE),
+                   sd_cindex = sd(cindex, na.rm = TRUE),
+                   lb_cindex = quantile(cindex, probs = 0.025, na.rm = TRUE),
+                   ub_cindex = quantile(cindex, probs = 0.975, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(mean_cindex))
+```
+
+### Violin Plot
+```{r model_comp_violin}
+perf_df %>%
+  mutate(model = fct_relevel(model,
+                             "CoxPH",
+                             "Ridge",
+                             "Lasso",
+                             "Elastic Net",
+                             "Cox Boost",
+                             "XGBoost Linear",
+                             "XGBoost Tree",
+                             "Random Survival Forest")) %>%
+  ggplot(aes(x = model, y = cindex, fill = model)) + 
+  geom_violin(alpha = 0.5) +
+  geom_point(alpha = 0.5) +
+  stat_summary(fun = "mean",
+               geom = "crossbar", 
+               width = 0.3,
+               colour = "black") +
+  theme_bw() +
+  labs(x = "Model",
+       y = "C-index",
+       fill = "Model") + 
+  coord_flip() + 
+  scale_x_discrete(limits = rev) +
+  annotate("rect", xmin = 4.5, xmax = 7.5,
+           ymin = 0.69, ymax = 0.7) +
+  annotate("text",
+           x = 6,
+           y = 0.695,
+           col = "white",
+           label = "Penalized",
+           angle = 90) +
+  annotate("rect", xmin = 1.7, xmax = 4.3,
+           ymin = 0.69, ymax = 0.7) +
+  annotate("text",
+           x = 3,
+           y = 0.695,
+           col = "white",
+           label = "Boost",
+           angle = 90) +
+  annotate("rect", xmin = 0.5, xmax = 1.5,
+           ymin = 0.69, ymax = 0.7) +
+  annotate("text",
+           x = 1,
+           y = 0.695,
+           col = "white",
+           label = "Tree",
+           angle = 90)
+
+```
+
+## Features
+
+### Selected Features Heatmap
+```{r featsel_heatmap_rec, include = FALSE, fig.width = 8, fig.height = 12}
+get_feat_selections <- function(start) {
+  ind <- str_which(names(start), "_featsel_(?!aggr_)")
+  feat_wide <- map_dfc(ind, ~ all_res %>% 
+                         pluck(.x) %>% 
+                         pivot_longer(-c(x1, total),
+                                      names_to = "iter",
+                                      values_to = "weight") %>%
+                         group_by(x1) %>%
+                         dplyr::summarize("{names(all_res)[[.x]]}" := sum(weight != 0, na.rm = TRUE)) %>%
+                         ungroup() %>%
+                         column_to_rownames(var = "x1"))
+  feat_long <- feat_wide %>%
+    rownames_to_column(var = "variable") %>%
+    pivot_longer(-variable,
+                 names_to = "model",
+                 values_to = "n_selections")
+  feat_long
+}
+feat_selections <- get_feat_selections(all_res)
+
+feat_selections %>%
+  mutate(model = case_when(
+    model == "cox_1_featsel_" ~ "Cox",
+    model == "eln_1_featsel_" ~ "Elastic Net",
+    model == "gbmboost_1_featsel_" ~ "Cox Boost",
+    model == "lasso_1_featsel_" ~ "Lasso",
+    model == "rfsrc_1_featsel_" ~ "Random Survival Forest",
+    model == "ridge_1_featsel_" ~ "Ridge",
+    model == "xgbl_1_featsel_" ~ "XGBoost Linear",
+    model == "xgbt_1_featsel_" ~ "XGBoost Tree"
+  )) %>%
+  filter(!model %in% c("Random Survival Forest", "Ridge", "XGBoost Linear"),
+         str_detect(variable, "(?<![PRE])REC") | 
+           str_detect(variable, "?<![XCAN_])INSURANCE") |
+           variable %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = model, y = variable, fill = n_selections)) +
+  geom_tile() + 
+  geom_text(aes(label = n_selections), col = "black", size = 2) +
+  scale_fill_gradient(low = "white", high = "blue") + 
+  theme_bw() +
+  labs(x = "Model",
+       y = "Variable",
+       fill = "Number of\nSelections") + 
+  scale_y_discrete(limits = rev)
+```
+
+```{r featsel_heatmap_don, include = FALSE, fig.width = 8, fig.height = 12}
+feat_selections %>%
+  mutate(model = case_when(
+    model == "cox_1_featsel_" ~ "Cox",
+    model == "eln_1_featsel_" ~ "Elastic Net",
+    model == "gbmboost_1_featsel_" ~ "Cox Boost",
+    model == "lasso_1_featsel_" ~ "Lasso",
+    model == "rfsrc_1_featsel_" ~ "Random Survival Forest",
+    model == "ridge_1_featsel_" ~ "Ridge",
+    model == "xgbl_1_featsel_" ~ "XGBoost Linear",
+    model == "xgbt_1_featsel_" ~ "XGBoost Tree"
+  )) %>%
+  filter(!model %in% c("Random Survival Forest", "Ridge", "XGBoost Linear"),
+         str_detect(variable, "DON_")) %>%
+  ggplot(aes(x = model, y = variable, fill = n_selections)) +
+  geom_tile() + 
+  geom_text(aes(label = n_selections), col = "black", size = 2) +
+  scale_fill_gradient(low = "white", high = "blue") + 
+  theme_bw() +
+  labs(x = "Model",
+       y = "Variable",
+       fill = "Number of\nSelections") + 
+  scale_y_discrete(limits = rev)
+```
+
+```{r featsel_heatmap_can, include = FALSE, fig.width = 8, fig.height = 12}
+feat_selections %>%
+  mutate(model = case_when(
+    model == "cox_1_featsel_" ~ "Cox",
+    model == "eln_1_featsel_" ~ "Elastic Net",
+    model == "gbmboost_1_featsel_" ~ "Cox Boost",
+    model == "lasso_1_featsel_" ~ "Lasso",
+    model == "rfsrc_1_featsel_" ~ "Random Survival Forest",
+    model == "ridge_1_featsel_" ~ "Ridge",
+    model == "xgbl_1_featsel_" ~ "XGBoost Linear",
+    model == "xgbt_1_featsel_" ~ "XGBoost Tree"
+  )) %>%
+  filter(!model %in% c("Random Survival Forest", "Ridge", "XGBoost Linear"),
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = model, y = variable, fill = n_selections)) +
+  geom_tile() + 
+  geom_text(aes(label = n_selections), col = "black", size = 2) +
+  scale_fill_gradient(low = "white", high = "blue") + 
+  theme_bw() +
+  labs(x = "Model",
+       y = "Variable",
+       fill = "Number of\nSelections") + 
+  scale_y_discrete(limits = rev)
+```
+
+### Selected Features {.tabset}
+```{r}
+# filter out variables that were never selected by any method, excluding ridge
+feat_sel_stats <- feat_selections %>%
+  filter(!str_detect(model, "ridge")) %>%
+  group_by(variable) %>%
+  dplyr::summarize(avg_times = mean(n_selections, na.rm = TRUE),
+                   tot_times = sum(n_selections, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(avg_times))
+```
+
+A selection of a feature is related to how important a model deemed it
+
+#### All
+```{r top_20_feat}
+feat_sel_stats %>%
+  slice(1:20) %>%
+  mutate(avg_times = round(avg_times, 1),
+         variable = recode(variable,
+                           REC_POSTX_STROKE = "Post-transplant Stroke",
+                           status_change = "Status Change",
+                           REC_TOT_BILI = "Bilirubin",
+                           REC_POSTX_DIAL = "Post-transplant Dialysis",
+                           REC_IMMUNO_MAINT_MEDS = "Immunosuppresion",
+                           REC_GRAFT_STAT = "Received Graft",
+                           DM_Baseline = "Diabetes",
+                           CAN_BMI = "Waitlist BMI",
+                           CARDIAC_ETIOLOGY3 = "Ischemic Cardiomyopathy",
+                           REC_CARDIAC_OUTPUT = "Cardiac Output",
+                           REC_POSTX_AIRWAY = "Post-transplant Airway Dehiscence",
+                           REC_AGE_AT_TX = "Age",
+                           REC_FUNCTIONAL_STATUS4 = "Unclear Functional Status",
+                           DON_AGE = "Donor Age",
+                           REC_BMI = "BMI",
+                           REC_LIFE_SUPPORT_TY0 = "No Life Support",
+                           CAN_HGT_CM = "Waitlist Height",
+                           REC_ACUTE_REJ_EPISODE2 = "Acute Rejection",
+                           DON_BMI = "Donor BMI",
+                           REC_POSTX_LOS = "Post-transplant LOS")) %>%
+  ggplot(aes(x = forcats::fct_reorder(variable, avg_times),
+             y = avg_times)) + 
+  geom_col() +
+  geom_text(aes(label = avg_times), hjust = 1, col = "white") +
+  coord_flip() + 
+  theme_bw() + 
+  labs(x = "Variable",
+       y = "Average number of times selected across all models")
+```
+
+```{r top_20_feat_indiv}
+get_feat_sel_by_model <- function(feat_sel,
+                                  .model,
+                                  plot_title) {
+  var_df <- feat_sel %>%
+    filter(!str_detect(model, "cox"),
+           !str_detect(model, "ridge"),
+           str_detect(model, .model)) %>%
+    arrange(desc(n_selections))
+  
+  ggplot(var_df %>%
+           slice(1:20),
+         aes(x = forcats::fct_reorder(variable, n_selections),
+             y = n_selections)) + 
+    geom_col() +
+    coord_flip() + 
+    theme_bw() + 
+    labs(x = "Variable",
+         y = "Number of times selected",
+         title = plot_title)
+}
+feat_sel_tibble <- tibble(model_regex = c("lasso",
+                                          "eln",
+                                          "gbmboost"),
+                          model = c("Lasso",
+                                    "Elastic Net",
+                                    "Cox Boost"))
+individual_featsel_plots <- map2(feat_sel_tibble$model_regex,
+                                 feat_sel_tibble$model,
+                                 ~get_feat_sel_by_model(feat_selections,
+                                                        .x, .y))
+```
+
+#### Lasso
+```{r featsel_lasso}
+p1 <- individual_featsel_plots[[1]] +
+  geom_text(aes(label = n_selections), hjust = 1, col = "white")
+p1
+```
+
+#### Elastic Net
+```{r featsel_eln}
+p2 <- individual_featsel_plots[[2]] +
+  geom_text(aes(label = n_selections), hjust = 1, col = "white") 
+p2
+```
+
+#### Cox Boost
+```{r featsel_boost}
+p3 <- individual_featsel_plots[[3]] + 
+  geom_text(aes(label = n_selections), hjust = 1, col = "white")
+p3
+```
+
+#### Cowplot of Feature Selection
+```{r grid_featsel, include = FALSE, fig.width = 10, fig.height = 9}
+(p1 + p2) / (p3 + plot_spacer())
+```
+
+### Direction of features {.tabset}
+
+Weights of 0 not plotted in these graphs.
+
+```{r}
+get_feat_magnitude <- function(start) {
+  ind <- str_which(names(start), "_featsel_(?!aggr_)")
+  feat_wide <- map(ind, ~ all_res %>% 
+                     pluck(.x) %>% 
+                     pivot_longer(-x1,
+                                  names_to = "iter",
+                                  values_to = "weight") %>%
+                     select(-iter) %>%
+                     mutate(id = row_number()) %>%
+                     rename("{names(all_res)[[.x]]}" := "weight")) %>%
+    reduce(left_join, by = c("x1",
+                             "id"))
+}
+
+feat_magnitude <- get_feat_magnitude(all_res)
+
+feat_magnitude_long <- feat_magnitude %>%
+  pivot_longer(-c(x1, id),
+               names_to = "method",
+               values_to = "weight") %>%
+  mutate(method = str_replace(method, "_1_featsel_", ""))
+```
+
+#### Ridge
+
+```{r ridge_rec}
+feat_magnitude_long %>%
+  filter(method == "ridge",
+         weight != 0,
+         str_detect(x1, "(?<![PRE])REC") | 
+           str_detect(x1, "?<![XCAN_])INSURANCE") |
+           x1 %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  theme_bw() + 
+  xlim(-0.5, 0.5) + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Recipient Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r ridge_can}
+feat_magnitude_long %>%
+  filter(method == "ridge",
+         weight != 0,
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Candidate Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r ridge_don}
+feat_magnitude_long %>%
+  filter(method == "ridge",
+         weight != 0,
+         str_detect(x1, "DON_")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Donor Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+#### Lasso
+
+```{r lasso_rec}
+feat_magnitude_long %>%
+  filter(method == "lasso",
+         weight != 0,
+         str_detect(x1, "(?<![PRE])REC") | 
+           str_detect(x1, "?<![XCAN_])INSURANCE") |
+           x1 %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-0.5, 0.5) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Recipient Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r lasso_can}
+feat_magnitude_long %>%
+  filter(method == "lasso",
+         weight != 0,
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Candidate Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r lasso_don}
+feat_magnitude_long %>%
+  filter(method == "lasso",
+         weight != 0,
+         str_detect(x1, "DON_")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Donor Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+#### Elastic Net
+
+```{r eln_rec}
+feat_magnitude_long %>%
+  filter(method == "eln",
+         weight != 0,
+         str_detect(x1, "(?<![PRE])REC") | 
+           str_detect(x1, "?<![XCAN_])INSURANCE") |
+           x1 %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-0.3, 0.5) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Recipient Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r eln_can}
+feat_magnitude_long %>%
+  filter(method == "eln",
+         weight != 0,
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Candidate Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r eln_don}
+feat_magnitude_long %>%
+  filter(method == "eln",
+         weight != 0,
+         str_detect(x1, "DON_")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Donor Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+#### Cox Boost
+```{r boost_rec}
+feat_magnitude_long %>%
+  filter(method == "gbmboost",
+         weight != 0,
+         str_detect(x1, "(?<![PRE])REC") | 
+           str_detect(x1, "?<![XCAN_])INSURANCE") |
+           x1 %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-0.1, 1) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Recipient Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r boost_can}
+feat_magnitude_long %>%
+  filter(method == "gbmboost",
+         weight != 0,
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-1, 20) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Candidate Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r boost_don}
+feat_magnitude_long %>%
+  filter(method == "gbmboost",
+         weight != 0,
+         str_detect(x1, "DON_")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") + 
+  xlim(-1, 25) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Donor Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+#### XGBoost
+```{r xgbl_rec}
+feat_magnitude_long %>%
+  filter(method == "xgbl",
+         weight != 0,
+         str_detect(x1, "(?<![PRE])REC") | 
+           str_detect(x1, "?<![XCAN_])INSURANCE") |
+           x1 %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-0.05, 0.05) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Recipient Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r xgbl_can}
+feat_magnitude_long %>%
+  filter(method == "xgbl",
+         weight != 0,
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Candidate Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r xgbl_don}
+feat_magnitude_long %>%
+  filter(method == "xgbl",
+         weight != 0,
+         str_detect(x1, "DON_")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Donor Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+#### XGBoost Tree
+```{r xgbt_rec}
+feat_magnitude_long %>%
+  filter(method == "xgbt",
+         weight != 0,
+         str_detect(x1, "(?<![PRE])REC") | 
+           str_detect(x1, "?<![XCAN_])INSURANCE") |
+           x1 %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-0.01, 0.2) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Recipient Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r xgbt_can}
+feat_magnitude_long %>%
+  filter(method == "xgbt",
+         weight != 0,
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  theme_bw() + 
+  xlim(-0.01, 0.05) + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Candidate Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r xgbt_don}
+feat_magnitude_long %>%
+  filter(method == "xgbt",
+         weight != 0,
+         str_detect(x1, "DON_")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") + 
+  xlim(-0.01, 0.1) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Donor Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+#### RFSRC
+```{r rfsrc_rec}
+feat_magnitude_long %>%
+  filter(method == "rfsrc",
+         weight != 0,
+         str_detect(x1, "(?<![PRE])REC") | 
+           str_detect(x1, "?<![XCAN_])INSURANCE") |
+           x1 %in% c("MDRDeGFR_B", "VAD")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-0.01, 0.5) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Recipient Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r rfsrc_can}
+feat_magnitude_long %>%
+  filter(method == "rfsrc",
+         weight != 0,
+         str_detect(variable, "CARDIAC_ETIOLOGY") | 
+           str_detect(variable, "CAN_RACE_SRTR") | 
+           str_detect(variable, "XCAN_INSURANCE") |
+           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
+                                                         "PREV_MALIG", "WAIT_TIME",
+                                                         "MDRDeGFR_WL")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") +
+  xlim(-0.01, 0.1) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Candidate Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
+
+```{r rfsrc_don}
+feat_magnitude_long %>%
+  filter(method == "rfsrc",
+         weight != 0,
+         str_detect(x1, "DON_")) %>%
+  ggplot(aes(x = weight,
+             y = reorder(x1, desc(x1)))) + 
+  # geom_point(alpha = 0.3) +
+  geom_density_ridges() +
+  geom_vline(xintercept = 0, col = "red") + 
+  xlim(-0.01, 0.1) + 
+  theme_bw() + 
+  labs(x = "Weight",
+       y = "Variable",
+       title = "Donor Characteristics") + 
+  theme(axis.text = element_text(size = 5))
+```
