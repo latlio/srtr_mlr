@@ -18,9 +18,7 @@ Thus, we unfortunately cannot share our data preprocessing script. Please feel f
 
 ## Running the pipeline
 
-Step 1
-
-Set up your config file. Important columns are:
+**Step 1** Set up your config file. Important columns are:
 
 | Variable | Definition |
 | :---:   | :---: | 
@@ -33,9 +31,7 @@ Set up your config file. Important columns are:
 
 Note: If running xgboost, change line 75 in RLearner_surv_xgboost.R to your time and status variables
 
-Step 2
-
-Run the benchmark pipeline.
+**Step 2** Run the benchmark pipeline.
 
 1st argument is name of config file
 
