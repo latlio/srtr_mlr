@@ -1,7 +1,7 @@
 library(survival)
-#library(survivalsvm)
 library(Hmisc)
 library(mlr)
+# library(mlr3)
 library(mlrCPO)
 library(pryr)
 library(checkmate)
@@ -10,16 +10,12 @@ library(mice)
 library(purrr)
 library(stringr)
 
+#need to install survAUC, xgboost, glmnet, gbm, randomForestSRC, remotes::install_github("mlr-org/mlr3extralearners")
+
 code_dir = "mlr_code/"
 source(paste0(code_dir, "stability.R"))
 source(paste0(code_dir, "performance.R"))
 source(paste0(code_dir, "features.R"))
-
-# dataset <- readRDS("mice_clean_elizabeth_df_post2018_full.Rds")
-# task_id <- "TEST"
-# time_var <- "Pers_DeathPDays"
-# status_var <- "Pers_DeathCensor"
-# NUM_FOLDS <- 5
 
 survival_tests = function(task_id, dataset, result_file, time_var, status_var, active_learners = LRN_ALL, run_stability = FALSE, impute = TRUE, rpt = 0) 
 {  
@@ -30,23 +26,16 @@ survival_tests = function(task_id, dataset, result_file, time_var, status_var, a
   configureMlr(show.learner.output = TRUE, on.learner.error = 'warn')	
   
   #-----------------------------------------------------------------------------------------------------------------------------
-  # THE TASK - I.E. DATSET
+  # THE TASK - I.E. DATASET
   #-----------------------------------------------------------------------------------------------------------------------------
   dataset = dataset[ , !(names(dataset) %in% c("ID"))]
   surv.task = makeSurvTask(id = task_id, data = dataset, target = c(time_var, status_var))
-  # ohe.task = surv.task %>>% cpoDummyEncode() %>>% cpoModelMatrix(~ 0 + .^2)
-  #Features: 105 -> 175 -> 255
   ohe.task = surv.task %>>% cpoDummyEncode()
-  # ohe.task = surv.task %>>% cpoDummyEncode() %>>% cpoModelMatrix(~ 0 + .^2)
-  # ohe.task = surv.task %>>% cpoDummyEncode() %>>% cpoModelMatrix(~ 0 + . + Dialysis_Baseline:DM_Baseline + Dialysis_Baseline:REC_TOT_BILI + DM_Baseline:REC_TOT_BILI + REC_ECMO:Dialysis_Baseline + REC_ECMO:DM_Baseline + REC_ECMO:REC_LIFE_SUPPORT + REC_ECMO:REC_TOT_BILI + REC_ECMO:REC_VENTILATOR_SUPPORT + REC_ECMO:VAD + REC_LIFE_SUPPORT:Dialysis_Baseline + REC_LIFE_SUPPORT:DM_Baseline + REC_LIFE_SUPPORT:REC_TOT_BILI + REC_LIFE_SUPPORT:REC_VENTILATOR_SUPPORT + REC_VENTILATOR_SUPPORT:Dialysis_Baseline + REC_VENTILATOR_SUPPORT:DM_Baseline + REC_VENTILATOR_SUPPORT:REC_TOT_BILI + VAD:Dialysis_Baseline + VAD:DM_Baseline + VAD:REC_LIFE_SUPPORT + VAD:REC_TOT_BILI + VAD:REC_VENTILATOR_SUPPORT)
-  
-  # ohe.task = surv.task %>>% cpoDummyEncode() %>>% cpoModelMatrix(~ 0 + . + Dialysis_Baseline:CARDIAC_ETIOLOGY3 + Dialysis_Baseline:DM_Baseline + Dialysis_Baseline:REC_FUNCTIONAL_STATUS4 + Dialysis_Baseline:REC_GRAFT_STAT + Dialysis_Baseline:REC_IMMUNO_MAINT_MEDS + Dialysis_Baseline:REC_TOT_BILI + DM_Baseline:CARDIAC_ETIOLOGY3 + DON_AGE:CARDIAC_ETIOLOGY3 + DON_AGE:Dialysis_Baseline + DON_AGE:DM_Baseline + DON_AGE:REC_AGE_AT_TX + DON_AGE:REC_ECMO + DON_AGE:REC_FUNCTIONAL_STATUS4 + DON_AGE:REC_GRAFT_STAT + DON_AGE:REC_IMMUNO_MAINT_MEDS + DON_AGE:REC_LIFE_SUPPORT + DON_AGE:REC_TOT_BILI + DON_AGE:REC_VENTILATOR_SUPPORT + DON_AGE:VAD + REC_AGE_AT_TX:CARDIAC_ETIOLOGY3 + REC_AGE_AT_TX:Dialysis_Baseline + REC_AGE_AT_TX:DM_Baseline + REC_AGE_AT_TX:REC_ECMO + REC_AGE_AT_TX:REC_FUNCTIONAL_STATUS4 + REC_AGE_AT_TX:REC_GRAFT_STAT + REC_AGE_AT_TX:REC_IMMUNO_MAINT_MEDS + REC_AGE_AT_TX:REC_LIFE_SUPPORT + REC_AGE_AT_TX:REC_TOT_BILI + REC_AGE_AT_TX:REC_VENTILATOR_SUPPORT + REC_AGE_AT_TX:VAD + REC_ECMO:CARDIAC_ETIOLOGY3 + REC_ECMO:Dialysis_Baseline + REC_ECMO:DM_Baseline + REC_ECMO:REC_FUNCTIONAL_STATUS4 + REC_ECMO:REC_GRAFT_STAT + REC_ECMO:REC_IMMUNO_MAINT_MEDS + REC_ECMO:REC_LIFE_SUPPORT + REC_ECMO:REC_TOT_BILI + REC_ECMO:REC_VENTILATOR_SUPPORT + REC_ECMO:VAD + REC_FUNCTIONAL_STATUS4:CARDIAC_ETIOLOGY3 + REC_FUNCTIONAL_STATUS4:DM_Baseline + REC_GRAFT_STAT:CARDIAC_ETIOLOGY3 + REC_GRAFT_STAT:DM_Baseline + REC_GRAFT_STAT:REC_FUNCTIONAL_STATUS4 + REC_IMMUNO_MAINT_MEDS:CARDIAC_ETIOLOGY3 + REC_IMMUNO_MAINT_MEDS:DM_Baseline + REC_IMMUNO_MAINT_MEDS:REC_FUNCTIONAL_STATUS4 + REC_IMMUNO_MAINT_MEDS:REC_GRAFT_STAT + REC_LIFE_SUPPORT:CARDIAC_ETIOLOGY3 + REC_LIFE_SUPPORT:Dialysis_Baseline + REC_LIFE_SUPPORT:DM_Baseline + REC_LIFE_SUPPORT:REC_FUNCTIONAL_STATUS4 + REC_LIFE_SUPPORT:REC_GRAFT_STAT + REC_LIFE_SUPPORT:REC_IMMUNO_MAINT_MEDS + REC_LIFE_SUPPORT:REC_TOT_BILI + REC_LIFE_SUPPORT:REC_VENTILATOR_SUPPORT + REC_TOT_BILI:CARDIAC_ETIOLOGY3 + REC_TOT_BILI:DM_Baseline + REC_TOT_BILI:REC_FUNCTIONAL_STATUS4 + REC_TOT_BILI:REC_GRAFT_STAT + REC_TOT_BILI:REC_IMMUNO_MAINT_MEDS + REC_VENTILATOR_SUPPORT:CARDIAC_ETIOLOGY3 + REC_VENTILATOR_SUPPORT:Dialysis_Baseline + REC_VENTILATOR_SUPPORT:DM_Baseline + REC_VENTILATOR_SUPPORT:REC_FUNCTIONAL_STATUS4 + REC_VENTILATOR_SUPPORT:REC_GRAFT_STAT + REC_VENTILATOR_SUPPORT:REC_IMMUNO_MAINT_MEDS + REC_VENTILATOR_SUPPORT:REC_TOT_BILI + VAD:CARDIAC_ETIOLOGY3 + VAD:Dialysis_Baseline + VAD:DM_Baseline + VAD:REC_FUNCTIONAL_STATUS4 + VAD:REC_GRAFT_STAT + VAD:REC_IMMUNO_MAINT_MEDS + VAD:REC_LIFE_SUPPORT + VAD:REC_TOT_BILI + VAD:REC_VENTILATOR_SUPPORT)
   
   # So that we know the  number of features after one-hot encoding and their names 
   task.names = getTaskFeatureNames(ohe.task)
   num_features = getTaskNFeats(ohe.task)
   print(paste0("Num Features: ", num_features))
-  # print(paste0(task.names))
   
   if (num_features == 0) {
     print(Sys.time())
@@ -112,7 +101,7 @@ survival_tests = function(task_id, dataset, result_file, time_var, status_var, a
   cindex.sdna = setAggregation(cindex, test.sd_narm)
   cindex.uno.na = setAggregation(cindex.uno, test.mean_narm)
   cindex.uno.sdna = setAggregation(cindex.uno, test.sd_narm)
-  # brier.na = setAggregation(ibrier, test.mean_narm)
+  # brier.na = setAggregation(ibrier, test.mean_narm) #doesn't work for some reason
   # brier.sdna = setAggregation(ibrier, test.sd_narm)
   surv.measures = list(cindex.na, cindex.sdna, cindex.uno.na, cindex.uno.sdna)
   
@@ -275,13 +264,13 @@ survival_tests = function(task_id, dataset, result_file, time_var, status_var, a
                    "name" = "Rpart",
                    "tune_params" = NULL,
                    "args" = NULL),
-    "rfsrc" = list("class" = "surv.randomForestSRC",
+    "rfsrc" = list("class" = "surv.rfsrc",
                    "code" = LRN_RFSRC,
                    "name" = "RFSRC",
                    # "tune_params" = rfsrc_params2,
                    tune_params = NULL,
                    "args" = list(ntree = 500, 
-                                 importance = TRUE,
+                                 importance = "TRUE",
                                  nsplit = 5,
                                  mtry = 40,
                                  nodesize = 40)),
@@ -399,7 +388,12 @@ survival_tests = function(task_id, dataset, result_file, time_var, status_var, a
   run_learner = function(baselrn, resamp, result_file, impute) 
   {
     lrn = do.call(makeLearner, args = append(list("cl" = baselrn$class, "id" = baselrn$name, "predict.type" = "response"), baselrn$args))
-    lrn = cpoScale() %>>% lrn
+
+    # for randomforestsrc and mlr3 specifically
+    # lrn = lrn(baselrn$class, predict_type = "distr", id = baselrn$name)
+    # lrn$param_set$values = baselrn$args
+    
+    # lrn = cpoScale() %>>% lrn
     # lrn = cpoModelMatrix(~ 0 + . + Dialysis_Baseline:CARDIAC_ETIOLOGY3 + Dialysis_Baseline:DM_Baseline + Dialysis_Baseline:REC_FUNCTIONAL_STATUS4 + Dialysis_Baseline:REC_GRAFT_STAT + Dialysis_Baseline:REC_IMMUNO_MAINT_MEDS + Dialysis_Baseline:REC_TOT_BILI + DM_Baseline:CARDIAC_ETIOLOGY3 + DON_AGE:CARDIAC_ETIOLOGY3 + DON_AGE:Dialysis_Baseline + DON_AGE:DM_Baseline + DON_AGE:REC_AGE_AT_TX + DON_AGE:REC_ECMO + DON_AGE:REC_FUNCTIONAL_STATUS4 + DON_AGE:REC_GRAFT_STAT + DON_AGE:REC_IMMUNO_MAINT_MEDS + DON_AGE:REC_LIFE_SUPPORT + DON_AGE:REC_TOT_BILI + DON_AGE:REC_VENTILATOR_SUPPORT + DON_AGE:VAD + REC_AGE_AT_TX:CARDIAC_ETIOLOGY3 + REC_AGE_AT_TX:Dialysis_Baseline + REC_AGE_AT_TX:DM_Baseline + REC_AGE_AT_TX:REC_ECMO + REC_AGE_AT_TX:REC_FUNCTIONAL_STATUS4 + REC_AGE_AT_TX:REC_GRAFT_STAT + REC_AGE_AT_TX:REC_IMMUNO_MAINT_MEDS + REC_AGE_AT_TX:REC_LIFE_SUPPORT + REC_AGE_AT_TX:REC_TOT_BILI + REC_AGE_AT_TX:REC_VENTILATOR_SUPPORT + REC_AGE_AT_TX:VAD + REC_ECMO:CARDIAC_ETIOLOGY3 + REC_ECMO:Dialysis_Baseline + REC_ECMO:DM_Baseline + REC_ECMO:REC_FUNCTIONAL_STATUS4 + REC_ECMO:REC_GRAFT_STAT + REC_ECMO:REC_IMMUNO_MAINT_MEDS + REC_ECMO:REC_LIFE_SUPPORT + REC_ECMO:REC_TOT_BILI + REC_ECMO:REC_VENTILATOR_SUPPORT + REC_ECMO:VAD + REC_FUNCTIONAL_STATUS4:CARDIAC_ETIOLOGY3 + REC_FUNCTIONAL_STATUS4:DM_Baseline + REC_GRAFT_STAT:CARDIAC_ETIOLOGY3 + REC_GRAFT_STAT:DM_Baseline + REC_GRAFT_STAT:REC_FUNCTIONAL_STATUS4 + REC_IMMUNO_MAINT_MEDS:CARDIAC_ETIOLOGY3 + REC_IMMUNO_MAINT_MEDS:DM_Baseline + REC_IMMUNO_MAINT_MEDS:REC_FUNCTIONAL_STATUS4 + REC_IMMUNO_MAINT_MEDS:REC_GRAFT_STAT + REC_LIFE_SUPPORT:CARDIAC_ETIOLOGY3 + REC_LIFE_SUPPORT:Dialysis_Baseline + REC_LIFE_SUPPORT:DM_Baseline + REC_LIFE_SUPPORT:REC_FUNCTIONAL_STATUS4 + REC_LIFE_SUPPORT:REC_GRAFT_STAT + REC_LIFE_SUPPORT:REC_IMMUNO_MAINT_MEDS + REC_LIFE_SUPPORT:REC_TOT_BILI + REC_LIFE_SUPPORT:REC_VENTILATOR_SUPPORT + REC_TOT_BILI:CARDIAC_ETIOLOGY3 + REC_TOT_BILI:DM_Baseline + REC_TOT_BILI:REC_FUNCTIONAL_STATUS4 + REC_TOT_BILI:REC_GRAFT_STAT + REC_TOT_BILI:REC_IMMUNO_MAINT_MEDS + REC_VENTILATOR_SUPPORT:CARDIAC_ETIOLOGY3 + REC_VENTILATOR_SUPPORT:Dialysis_Baseline + REC_VENTILATOR_SUPPORT:DM_Baseline + REC_VENTILATOR_SUPPORT:REC_FUNCTIONAL_STATUS4 + REC_VENTILATOR_SUPPORT:REC_GRAFT_STAT + REC_VENTILATOR_SUPPORT:REC_IMMUNO_MAINT_MEDS + REC_VENTILATOR_SUPPORT:REC_TOT_BILI + VAD:CARDIAC_ETIOLOGY3 + VAD:Dialysis_Baseline + VAD:DM_Baseline + VAD:REC_FUNCTIONAL_STATUS4 + VAD:REC_GRAFT_STAT + VAD:REC_IMMUNO_MAINT_MEDS + VAD:REC_LIFE_SUPPORT + VAD:REC_TOT_BILI + VAD:REC_VENTILATOR_SUPPORT) %>>% lrn
     model_id = paste0(baselrn$name, '.scale')
     if (!is.null(baselrn$tune_params)) {
@@ -426,7 +420,10 @@ survival_tests = function(task_id, dataset, result_file, time_var, status_var, a
     bmr = benchmark(lrn, ohe.task, resampling = resamp, surv.measures, show.info = TRUE, models = TRUE, keep.extract = TRUE,
                     keep.pred = TRUE)
     print("Benchmarking done")
-    getBMRPredictions(bmr)
+    prediction_res <- getBMRPredictions(bmr, as.df = TRUE)
+    saveRDS(prediction_res, "results/prediction_res.Rds")
+    model_res <- getBMRModels(bmr)
+    saveRDS(model_res, "results/model_res.Rds")
     model_results(task_id, bmr, model_id, result_file, TRUE)
   }
   

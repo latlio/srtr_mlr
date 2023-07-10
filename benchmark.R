@@ -1,5 +1,4 @@
 library(survival)
-#library(survivalsvm)
 library(mlr)
 library(stringi)
 library(mice)
@@ -8,23 +7,6 @@ library(dplyr)
 
 code_dir = "mlr_code/"
 data_dir = "data/"
-
-# SMTP_creds_file <- ".MerckEmailSMTP"
-# 
-# if(!file.exists(SMTP_creds_file)){
-#   cat("creating SMTP creds file\n") 
-#   
-#   blastula::create_smtp_creds_file(
-#     file = SMTP_creds_file,
-#     #id = "Merck Exchange",          # Name the Credential
-#     user = NULL,
-#     provider = NULL,
-#     host = "mailhost.merck.com",
-#     port = 25,
-#     use_ssl = FALSE 
-#   )
-# } else { cat("SMTP credential file exists\n") }
-
 
 source(paste0(code_dir, "survival_const.R"))
 source(paste0(code_dir, "survival_tests.R"))
@@ -147,26 +129,5 @@ tryCatch({
   },
   error = function(err) {
     print(err)
-    # compose_email(
-    #   body = md(glue::glue(
-    #     "Hello Lathan, your ML job ran into this error: {err}"))
-    # ) %>%
-    #   smtp_send(
-    #     from = "lathan.liou@merck.com",
-    #     to = "lathan.liou@merck.com",
-    #     subject = "Email from MLR",
-    #     credentials = creds_file(".MerckEmailSMTP")
-    #   )
   })
-
-# compose_email(
-#   body = md(glue::glue(
-#     "Hello Lathan, your ML job finished"))
-# ) %>%
-#   smtp_send(
-#     from = "lathan.liou@merck.com",
-#     to = "lathan.liou@merck.com",
-#     subject = "Email from MLR",
-#     credentials = creds_file(".MerckEmailSMTP")
-#   )
 

@@ -40,7 +40,8 @@ save_features = function(feats, method, names, scores, num_models) {
 		}
 	}
 	cols = paste0(method, "-", 1:num_models)
-	feats$featsel_aggr[, method] = apply(feats$featsel[,cols], 1, function(x) mean(x, na.rm=TRUE))
+	feats$featsel_aggr[, paste0(method, ".mean")] = apply(feats$featsel[,cols], 1, function(x) mean(x, na.rm=TRUE))
+	feats$featsel_aggr[, paste0(method, ".sd")] = apply(feats$featsel[,cols], 1, function(x) sd(x, na.rm=TRUE))
 	return(feats)
 }
 	

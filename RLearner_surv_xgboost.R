@@ -72,7 +72,7 @@ trainLearner.surv.xgboost = function(.learner, .task, .subset, .weights = NULL, 
   }
 
   task.data = getTaskData(.task, .subset, target.extra = TRUE)
-  survtime <- ifelse(task.data$target$Pers_DeathCensor==1, task.data$target$Pers_DeathPDays, -task.data$target$Pers_DeathPDays)
+  survtime <- ifelse(task.data$target$death_1yr==1, task.data$target$DeathPDays, -task.data$target$DeathPDays)
   parlist$data = xgboost::xgb.DMatrix(data = data.matrix(task.data$data), label = survtime)
                                                                                                                   
   if (!is.null(.weights))

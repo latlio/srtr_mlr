@@ -5,17 +5,23 @@ date: "`r format(Sys.time(), '%B %d, %Y')`"
 output: 
   html_document:
       keep_md: true
+      toc: true
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
+library(readxl)
 library(fs)
 library(cowplot)
 library(ggridges)
 library(forcats)
 library(patchwork)
-all_files <- list.files(path = "results_new",
+library(DT)
+library(kableExtra)
+all_files <- list.files(path = "results",
                         full.names = TRUE,
                         pattern = "*.csv")
 all_res <- all_files %>%
@@ -23,13 +29,22 @@ all_res <- all_files %>%
         janitor::clean_names()) %>%
   setNames(all_files %>% 
              str_replace(".csv", "") %>%
-             str_replace("results_new/", ""))
+             str_replace("results/", ""))
+
+#recode random forest output variables to match order
+all_res[[21]]$x1 <- str_replace_all(all_res[[22]]$x1, "\\.", "") 
+all_res[[22]]$x1 <- str_replace_all(all_res[[22]]$x1, "\\.", "") 
+all_res[[21]] <- all_res[[21]][match(all_res[[2]]$x1, all_res[[21]]$x1),]
+all_res[[22]] <- all_res[[22]][match(all_res[[3]]$x1, all_res[[22]]$x1),]
 
 # modify rfsrc df to fit the others, since I had to use a reduced input set of vars
 # full_vars = data.frame(variable = all_res$cox_1_featsel_$variable)
 # new_rfsrc_featsel <- left_join(full_vars, all_res$rfsrc_1_featsel_,
 #                                by = "variable")
 # all_res$rfsrc_1_featsel_ <- new_rfsrc_featsel
+elizabeth_vars <- read_excel("data/elizabeth_vars.xlsx",
+                             sheet = 3) %>%
+  select(1:4)
 ```
 
 ## Comparing Short-Term and Long-Term C-Index
@@ -87,13 +102,74 @@ make_perf_df <- function(start) {
 perf_df <- make_perf_df(all_res)
 perf_df$model <- recode(perf_df$model,
                         rfsrc_scale = "Random Survival Forests",
-                        xgb_tree_scale = "XGBoost Tree",
-                        ridge_scale = "Ridge",
-                        cox_boost_scale = "Cox Boost",
-                        xgb_linear_scale = "XGBoost Linear",
-                        elastic_net_scale = "Elastic Net",
-                        lasso_scale = "Lasso",
-                        cox_ph_scale = "CoxPH")
+                        xgb_tree_tuned = "XGBoost Tree",
+                        ridge = "Ridge",
+                        cox_boost_tuned = "Cox Boost",
+                        xgb_linear = "XGBoost Linear",
+                        elastic_net = "Elastic Net",
+                        lasso = "Lasso",
+                        cox_ph = "CoxPH")
+```
+
+## T-test on C-indices
+Using as reference: https://medium.com/analytics-vidhya/using-the-corrected-paired-students-t-test-for-comparing-the-performance-of-machine-learning-dc6529eaa97f
+
+Nadeau and Bengio
+
+```{r}
+library(correctR)
+ind <- str_which(names(all_res), "_perf_")
+ci_wide <- map_dfc(ind, function(ind) all_res %>% pluck(ind) %>% select(-x1)) %>%
+  mutate(k = as.numeric(rep(1:5, each = 5)),
+         r = as.numeric(rep(1:5, 5)))
+ci_long <- ci_wide %>%
+  pivot_longer(cox_ph:xgb_tree_tuned,
+               names_to = "model",
+               values_to = "values")
+
+expand.grid.unique <- function(x, y, include.equals=FALSE)
+{
+  x <- unique(x)
+  
+  y <- unique(y)
+  
+  g <- function(i)
+  {
+    z <- setdiff(y, x[seq_len(i-include.equals)])
+    
+    if(length(z)) cbind(x[i], z, deparse.level=0)
+  }
+  
+  do.call(rbind, lapply(seq_along(x), g))
+}
+
+pairs <- expand.grid.unique(unique(ci_long$model),
+                            unique(ci_long$model)) %>% 
+  as.data.frame()
+
+pvalues <- map2(pairs$V1, pairs$V2,
+                ~ repkfold_ttest(data = ci_long %>%
+                                   filter(model %in% c(.x, .y)) %>%
+                                   select(model, values, k, r) %>%
+                                   mutate(model = as.numeric(case_when(
+                                     model == .x ~ 1,
+                                     TRUE ~ 2
+                                   ))) %>%
+                                   as.data.frame(),
+                                 n1 = 5156,
+                                 n2 = 1288,
+                                 k = 5,
+                                 r = 5)) %>%
+  purrr::list_rbind()
+
+pval_df <- cbind(pairs, pvalues) %>% 
+  as.data.frame() %>%
+  dplyr::mutate(statistic = round(statistic, digits = 2),
+                adj_pval = scales::pvalue(p.adjust(p.value, method = "bonferroni")),
+                p.value = scales::pvalue(p.value))
+pval_df %>%
+  kbl() %>%
+  kable_styling()
 ```
 
 ### Table
@@ -105,7 +181,9 @@ perf_df %>%
                    lb_cindex = quantile(cindex, probs = 0.025, na.rm = TRUE),
                    ub_cindex = quantile(cindex, probs = 0.975, na.rm = TRUE)) %>%
   ungroup() %>%
-  arrange(desc(mean_cindex))
+  arrange(desc(mean_cindex)) %>%
+  kbl() %>%
+  kable_styling()
 ```
 
 ### Violin Plot
@@ -162,13 +240,14 @@ perf_df %>%
 
 ## Features
 
-### Selected Features Heatmap
-```{r featsel_heatmap_rec, include = FALSE, fig.width = 8, fig.height = 12}
+### Selected Features Heatmap {.tabset}
+
+```{r}
 get_feat_selections <- function(start) {
   ind <- str_which(names(start), "_featsel_(?!aggr_)")
   feat_wide <- map_dfc(ind, ~ all_res %>% 
                          pluck(.x) %>% 
-                         pivot_longer(-c(x1, total),
+                         pivot_longer(-any_of(c("x1", "total")),
                                       names_to = "iter",
                                       values_to = "weight") %>%
                          group_by(x1) %>%
@@ -182,88 +261,79 @@ get_feat_selections <- function(start) {
                  values_to = "n_selections")
   feat_long
 }
+
 feat_selections <- get_feat_selections(all_res)
 
-feat_selections %>%
-  mutate(model = case_when(
-    model == "cox_1_featsel_" ~ "Cox",
-    model == "eln_1_featsel_" ~ "Elastic Net",
-    model == "gbmboost_1_featsel_" ~ "Cox Boost",
-    model == "lasso_1_featsel_" ~ "Lasso",
-    model == "rfsrc_1_featsel_" ~ "Random Survival Forests",
-    model == "ridge_1_featsel_" ~ "Ridge",
-    model == "xgbl_1_featsel_" ~ "XGBoost Linear",
-    model == "xgbt_1_featsel_" ~ "XGBoost Tree"
-  )) %>%
-  filter(!model %in% c("Random Survival Forests", "Ridge", "XGBoost Linear"),
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-  filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = model, y = variable, fill = n_selections)) +
-  geom_tile() + 
-  geom_text(aes(label = n_selections), col = "black", size = 2) +
-  scale_fill_gradient(low = "white", high = "blue") + 
-  theme_bw() +
-  labs(x = "Model",
-       y = "Variable",
-       fill = "Number of\nSelections") + 
-  scale_y_discrete(limits = rev)
+plot_featsel_heatmap <- function(vars) {
+  feat_selections %>%
+    mutate(model = case_when(
+      model == "cox_1_featsel_" ~ "Cox",
+      model == "eln_1_featsel_" ~ "Elastic Net",
+      model == "gbmboost_1_featsel_" ~ "Cox Boost",
+      model == "lasso_1_featsel_" ~ "Lasso",
+      model == "rfsrc_1_featsel_" ~ "Random Survival Forests",
+      model == "ridge_1_featsel_" ~ "Ridge",
+      model == "xgbl_1_featsel_" ~ "XGBoost Linear",
+      model == "xgbt_1_featsel_" ~ "XGBoost Tree"
+    )) %>%
+    filter(!model %in% c("Random Survival Forests", "Ridge", "XGBoost Linear"),
+           str_detect(variable, paste(vars, collapse = "|"))) %>%
+    ggplot(aes(x = model, y = variable, fill = n_selections)) +
+    geom_tile() + 
+    geom_text(aes(label = n_selections), col = "black", size = 6) +
+    scale_fill_gradient(low = "white", high = "blue") + 
+    theme_bw() +
+    labs(x = "Model",
+         y = "Variable",
+         fill = "Number of\nSelections") + 
+    scale_y_discrete(limits = rev)
+}
+
+dem_vars <- elizabeth_vars %>%
+  filter(status %in% c("demographic", "clinical")) %>%
+  pull(variable)
+
+rec_vars <- elizabeth_vars %>%
+  filter(status == "recipient") %>%
+  pull(variable)
+
+can_vars <- elizabeth_vars %>% 
+  filter(status == "candidate") %>% 
+  pull(variable)
+
+don_vars <- elizabeth_vars %>% 
+  filter(status == "donor") %>% 
+  pull(variable)
+
+proc_vars <- elizabeth_vars %>%
+  filter(status == "procedural") %>% 
+  pull(variable)
 ```
 
-```{r featsel_heatmap_don, include = FALSE, fig.width = 8, fig.height = 12}
-feat_selections %>%
-  mutate(model = case_when(
-    model == "cox_1_featsel_" ~ "Cox",
-    model == "eln_1_featsel_" ~ "Elastic Net",
-    model == "gbmboost_1_featsel_" ~ "Cox Boost",
-    model == "lasso_1_featsel_" ~ "Lasso",
-    model == "rfsrc_1_featsel_" ~ "Random Survival Forests",
-    model == "ridge_1_featsel_" ~ "Ridge",
-    model == "xgbl_1_featsel_" ~ "XGBoost Linear",
-    model == "xgbt_1_featsel_" ~ "XGBoost Tree"
-  )) %>%
-  filter(!model %in% c("Random Survival Forests", "Ridge", "XGBoost Linear"),
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = model, y = variable, fill = n_selections)) +
-  geom_tile() + 
-  geom_text(aes(label = n_selections), col = "black", size = 2) +
-  scale_fill_gradient(low = "white", high = "blue") + 
-  theme_bw() +
-  labs(x = "Model",
-       y = "Variable",
-       fill = "Number of\nSelections") + 
-  scale_y_discrete(limits = rev)
+#### Demographic and Clinical
+
+```{r featsel_heatmap_dem, include = TRUE, fig.width = 8, fig.height = 12}
+plot_featsel_heatmap(dem_vars)
 ```
 
-```{r featsel_heatmap_can, include = FALSE, fig.width = 8, fig.height = 12}
-feat_selections %>%
-  mutate(model = case_when(
-    model == "cox_1_featsel_" ~ "Cox",
-    model == "eln_1_featsel_" ~ "Elastic Net",
-    model == "gbmboost_1_featsel_" ~ "Cox Boost",
-    model == "lasso_1_featsel_" ~ "Lasso",
-    model == "rfsrc_1_featsel_" ~ "Random Survival Forests",
-    model == "ridge_1_featsel_" ~ "Ridge",
-    model == "xgbl_1_featsel_" ~ "XGBoost Linear",
-    model == "xgbt_1_featsel_" ~ "XGBoost Tree"
-  )) %>%
-  filter(!model %in% c("Random Survival Forests", "Ridge", "XGBoost Linear"),
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = model, y = variable, fill = n_selections)) +
-  geom_tile() + 
-  geom_text(aes(label = n_selections), col = "black", size = 2) +
-  scale_fill_gradient(low = "white", high = "blue") + 
-  theme_bw() +
-  labs(x = "Model",
-       y = "Variable",
-       fill = "Number of\nSelections") + 
-  scale_y_discrete(limits = rev)
+#### Recipient
+```{r featsel_heatmap_rec, include = TRUE, fig.width = 8, fig.height = 12}
+plot_featsel_heatmap(rec_vars)
+```
+
+#### Candidate
+```{r featsel_heatmap_can, include = TRUE, fig.width = 8, fig.height = 12}
+plot_featsel_heatmap(can_vars)
+```
+
+#### Donor
+```{r featsel_heatmap_don, include = TRUE, fig.width = 8, fig.height = 12}
+plot_featsel_heatmap(don_vars)
+```
+
+#### Procedural
+```{r featsel_heatmap_proc, include = TRUE, fig.width = 8, fig.height = 12}
+plot_featsel_heatmap(proc_vars)
 ```
 
 ### Selected Features {.tabset}
@@ -283,29 +353,39 @@ A selection of a feature is related to how important a model deemed it
 #### All
 ```{r top_20_feat}
 feat_sel_stats %>%
-  slice(1:20) %>%
+  slice(1:20) %>% 
   mutate(avg_times = round(avg_times, 1),
          variable = recode(variable,
-                           REC_POSTX_STROKE = "Post-transplant Stroke",
-                           status_change = "Status Change",
+                           REC_AGE_AT_TX = "Age at Transplant",
                            REC_TOT_BILI = "Bilirubin",
-                           REC_POSTX_DIAL = "Post-transplant Dialysis",
-                           REC_IMMUNO_MAINT_MEDS = "Immunosuppresion",
-                           REC_GRAFT_STAT = "Received Graft",
-                           DM_Baseline = "Diabetes",
-                           CAN_BMI = "Waitlist BMI",
-                           CARDIAC_ETIOLOGY3 = "Ischemic Cardiomyopathy",
-                           REC_CARDIAC_OUTPUT = "Cardiac Output",
-                           REC_POSTX_AIRWAY = "Post-transplant Airway Dehiscence",
-                           REC_AGE_AT_TX = "Age",
-                           REC_FUNCTIONAL_STATUS4 = "Unclear Functional Status",
+                           bmi_calculated = "BMI",
+                           REC_HR_ISCH = "Total Ischemic Time (min.)",
                            DON_AGE = "Donor Age",
-                           REC_BMI = "BMI",
-                           REC_LIFE_SUPPORT_TY0 = "No Life Support",
-                           CAN_HGT_CM = "Waitlist Height",
-                           REC_ACUTE_REJ_EPISODE2 = "Acute Rejection",
-                           DON_BMI = "Donor BMI",
-                           REC_POSTX_LOS = "Post-transplant LOS")) %>%
+                           CARDIAC_ETIOLOGY3 = "Ischemic Cardiomyopathy",
+                           CARDIAC_ETIOLOGY2 = "Dilated Cardiomyopathy",
+                           WAIT_TIME = "Time on Waitlist",
+                           status_change = "Change in Priority Status",
+                           REC_HBV_ANTIBODY0 = "HBV Negative",
+                           DM_Baseline = "Diabetes",
+                           INSURANCE1 = "Medicaid",
+                           REC_CARDIAC_SURG = "Prior Cardiac Surgery",
+                           VAD = "VAD",
+                           REC_CREAT = "Creatinine (mg/dL) Prior to Transplant",
+                           XCAN_FUNCTIONAL_STATUS3 = "Normal Functional Status",
+                           REC_TXFUS = "Received Prior Transfusion",
+                           PREV_MALIG = "Previous Malignancies",
+                           XCAN_EDUCATION2 = "High School Education",
+                           Dialysis_Baseline = "Prior Dialysis",
+                           PVR = "Pre-Transplant Pulmonary Vascular Resistance",
+                           MDRDeGFR_B = "eGFR",
+                           REC_CMV_STAT0 = "CMV Negative",
+                           REC_ECMO = "ECMO",
+                           MDRDeGFR_WL = "Waitlist eGFR",
+                           REC_HLA_TYP_DONE = "HLA Typing Performed",
+                           REC_EBV_STAT0 = "EBV Negative",
+                           REC_PROCEDURE_TY_HR2 = "Orthotopic Traditional Procedure",
+                           CARDIAC_ETIOLOGY6 = "Idiopathic Cardiac Etiology",
+                           REC_IABP = "Bridged with IABP")) %>%
   ggplot(aes(x = forcats::fct_reorder(variable, avg_times),
              y = avg_times)) + 
   geom_col() +
@@ -371,19 +451,18 @@ p3
 ```
 
 #### Cowplot of Feature Selection
-```{r grid_featsel, include = FALSE, fig.width = 10, fig.height = 9}
+```{r grid_featsel, include = TRUE, fig.width = 10, fig.height = 9}
 (p1 + p2) / (p3 + plot_spacer())
 ```
 
 ### Direction of features {.tabset}
-
-Weights of 0 not plotted in these graphs.
 
 ```{r}
 get_feat_magnitude <- function(start) {
   ind <- str_which(names(start), "_featsel_(?!aggr_)")
   feat_wide <- map(ind, ~ all_res %>% 
                      pluck(.x) %>% 
+                     select(-any_of("total")) %>%
                      pivot_longer(-x1,
                                   names_to = "iter",
                                   values_to = "weight") %>%
@@ -395,6 +474,8 @@ get_feat_magnitude <- function(start) {
     rename(variable = x1)
 }
 
+ind <- str_which(names(all_res), "rfsrc_1_featsel_(?!aggr_)")
+
 feat_magnitude <- get_feat_magnitude(all_res)
 
 feat_magnitude_long <- feat_magnitude %>%
@@ -402,440 +483,804 @@ feat_magnitude_long <- feat_magnitude %>%
                names_to = "method",
                values_to = "weight") %>%
   mutate(method = str_replace(method, "_1_featsel_", ""))
+
+create_weight_table <- function(.method,
+                                vars) {
+  if(.method %in% c("ridge", "lasso", "eln")) {
+    feat_magnitude_long %>%
+    filter(method == .method,
+           weight != 0,
+           str_detect(variable, paste(vars, collapse = "|"))) %>% 
+    group_by(method, variable) %>%
+    mutate(hr = exp(weight)) %>%
+    summarize(mean_hr = mean(hr, na.rm = TRUE),
+              sd_hr = sd(hr, na.rm = TRUE),
+              median_hr = median(hr, na.rm = TRUE),
+              iqr_hr = IQR(hr, na.rm = TRUE),
+              lb = quantile(hr, 0.025),
+              ub = quantile(hr, 0.975)) %>%
+    ungroup() %>%
+    mutate(across(mean_hr:iqr_hr, round, 3))
+  } else {
+    feat_magnitude_long %>%
+      filter(method == .method,
+             weight != 0,
+             str_detect(variable, paste(vars, collapse = "|"))) %>% 
+      group_by(method, variable) %>%
+      summarize(mean_weight = mean(weight, na.rm = TRUE),
+                sd_weight = sd(weight, na.rm = TRUE),
+                median_weight = median(weight, na.rm = TRUE),
+                iqr_weight = IQR(weight, na.rm = TRUE),
+                lb = quantile(weight, 0.025),
+                ub = quantile(weight, 0.975)) %>%
+      ungroup() %>%
+      mutate(across(mean_weight:iqr_weight, round, 3))
+  }
+}
+
+create_weight_boxplot <- function(.method,
+                                  vars) {
+  if(.method %in% c("ridge", "lasso", "eln")) {
+    feat_magnitude_long %>%
+      filter(method == .method,
+             str_detect(variable, paste(vars, collapse = "|"))) %>% 
+      mutate(hr = exp(weight)) %>%
+      ggplot(aes(x = forcats::fct_reorder(variable, hr), y = hr, color = variable)) +
+      geom_boxplot() +
+      geom_hline(yintercept = 1,
+                 alpha = 0.3) +
+      theme_bw() +
+      coord_flip() +
+      labs(x = "Variable",
+           y = "Hazard Ratio") + 
+      theme(legend.position = "none")
+  } else {
+    feat_magnitude_long %>%
+      filter(method == .method,
+             str_detect(variable, paste(vars, collapse = "|"))) %>% 
+      ggplot(aes(x = forcats::fct_reorder(variable, weight), y = weight, color = variable)) +
+      geom_boxplot() +
+      theme_bw() +
+      coord_flip() +
+      labs(x = "Variable",
+           y = "Importance") + 
+      theme(legend.position = "none")
+  }
+}
 ```
 
 #### Ridge
 
-```{r ridge_rec}
-feat_magnitude_long %>%
-  filter(method == "ridge",
-         weight != 0,
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-    filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  theme_bw() + 
-  xlim(-0.5, 0.5) + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Recipient Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Demographic and Clinical
+
+```{r weights_ridge_dem, include = TRUE}
+create_weight_boxplot("ridge", dem_vars)
 ```
 
-```{r ridge_can}
-feat_magnitude_long %>%
-  filter(method == "ridge",
-         weight != 0,
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Candidate Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Recipient
+```{r weights_ridge_rec, include = TRUE}
+create_weight_boxplot("ridge", rec_vars)
 ```
 
-```{r ridge_don}
-feat_magnitude_long %>%
-  filter(method == "ridge",
-         weight != 0,
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Donor Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Candidate
+```{r weights_ridge_can, include = TRUE}
+create_weight_boxplot("ridge", can_vars)
+```
+
+##### Donor
+```{r weights_ridge_don, include = TRUE}
+create_weight_boxplot("ridge", don_vars)
+```
+
+##### Procedural
+```{r weights_ridge_proc, include = TRUE}
+create_weight_boxplot("ridge", proc_vars)
 ```
 
 #### Lasso
 
-```{r lasso_rec}
-feat_magnitude_long %>%
-  filter(method == "lasso",
-         weight != 0,
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-    filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-0.5, 0.5) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Recipient Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Demographic and Clinical
+```{r weights_lasso_dem, include = TRUE}
+create_weight_boxplot("lasso", dem_vars)
 ```
 
-```{r lasso_can}
-feat_magnitude_long %>%
-  filter(method == "lasso",
-         weight != 0,
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Candidate Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Recipient
+```{r weights_lasso_rec, include = TRUE}
+create_weight_boxplot("lasso", rec_vars)
 ```
 
-```{r lasso_don}
-feat_magnitude_long %>%
-  filter(method == "lasso",
-         weight != 0,
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Donor Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Candidate
+```{r weights_lasso_can, include = TRUE}
+create_weight_boxplot("lasso", can_vars)
+```
+
+##### Donor
+```{r weights_lasso_don, include = TRUE}
+create_weight_boxplot("lasso", don_vars)
+```
+
+##### Procedural
+```{r weights_lasso_proc, include = TRUE}
+create_weight_boxplot("lasso", proc_vars)
 ```
 
 #### Elastic Net
 
-```{r eln_rec}
-feat_magnitude_long %>%
-  filter(method == "eln",
-         weight != 0,
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-    filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-0.3, 0.5) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Recipient Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Demographic and Clinical
+```{r weights_eln_dem, include = TRUE}
+create_weight_boxplot("eln", dem_vars)
 ```
 
-```{r eln_can}
-feat_magnitude_long %>%
-  filter(method == "eln",
-         weight != 0,
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Candidate Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Recipient
+```{r weights_eln_rec, include = TRUE}
+create_weight_boxplot("eln", rec_vars)
 ```
 
-```{r eln_don}
-feat_magnitude_long %>%
-  filter(method == "eln",
-         weight != 0,
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Donor Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Candidate
+```{r weights_eln_can, include = TRUE}
+create_weight_boxplot("eln", can_vars)
+```
+
+##### Donor
+```{r weights_eln_don, include = TRUE}
+create_weight_boxplot("eln", don_vars)
+```
+
+##### Procedural
+```{r weights_eln_proc, include = TRUE}
+create_weight_boxplot("eln", proc_vars)
 ```
 
 #### Cox Boost
-```{r boost_rec}
-feat_magnitude_long %>%
-  filter(method == "gbmboost",
-         weight != 0,
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-    filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-0.1, 1) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Recipient Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+
+##### Demographic and Clinical
+```{r weights_boost_dem, include = TRUE}
+create_weight_boxplot("gbmboost", dem_vars)
 ```
 
-```{r boost_can}
-feat_magnitude_long %>%
-  filter(method == "gbmboost",
-         weight != 0,
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-1, 20) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Candidate Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Recipient
+```{r weights_boost_rec, include = TRUE}
+create_weight_boxplot("gbmboost", rec_vars)
 ```
 
-```{r boost_don}
-feat_magnitude_long %>%
-  filter(method == "gbmboost",
-         weight != 0,
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") + 
-  xlim(-1, 25) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Donor Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Candidate
+```{r weights_boost_can, include = TRUE}
+create_weight_boxplot("gbmboost", can_vars)
+```
+
+##### Donor
+```{r weights_boost_don, include = TRUE}
+create_weight_boxplot("gbmboost", don_vars)
+```
+
+##### Procedural
+```{r weights_boost_proc, include = TRUE}
+create_weight_boxplot("gbmboost", proc_vars)
 ```
 
 #### XGBL
-```{r xgbl_rec}
-feat_magnitude_long %>%
-  filter(method == "xgbl",
-         weight != 0,
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-    filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-0.05, 0.05) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Recipient Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+
+##### Demographic and Clinical
+```{r weights_xgbl_dem, include = TRUE}
+create_weight_boxplot("xgbl", dem_vars)
 ```
 
-```{r xgbl_can}
-feat_magnitude_long %>%
-  filter(method == "xgbl",
-         weight != 0,
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Candidate Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Recipient
+```{r weights_xgbl_rec, include = TRUE}
+create_weight_boxplot("xgbl", rec_vars)
 ```
 
-```{r xgbl_don}
-feat_magnitude_long %>%
-  filter(method == "xgbl",
-         weight != 0,
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Donor Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Candidate
+```{r weights_xgbl_can, include = TRUE}
+create_weight_boxplot("xgbl", can_vars)
+```
+
+##### Donor
+```{r weights_xgbl_don, include = TRUE}
+create_weight_boxplot("xgbl", don_vars)
+```
+
+##### Procedural
+```{r weights_xgbl_proc, include = TRUE}
+create_weight_boxplot("xgbl", proc_vars)
 ```
 
 #### XGBoost Tree
-```{r xgbt_rec}
-feat_magnitude_long %>%
-  filter(method == "xgbt",
-         weight != 0,
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-    filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-0.01, 0.2) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Recipient Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+
+##### Demographic and Clinical
+```{r weights_xbgt_dem, include = TRUE}
+create_weight_boxplot("xgbt", dem_vars)
 ```
 
-```{r xgbt_can}
-feat_magnitude_long %>%
-  filter(method == "xgbt",
-         weight != 0,
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  theme_bw() + 
-  xlim(-0.01, 0.05) + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Candidate Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Recipient
+```{r weights_xgbt_rec, include = TRUE}
+create_weight_boxplot("xgbt", rec_vars)
 ```
 
-```{r xgbt_don}
-feat_magnitude_long %>%
-  filter(method == "xgbt",
-         weight != 0,
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") + 
-  xlim(-0.01, 0.1) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Donor Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Candidate
+```{r weights_xgbt_can, include = TRUE}
+create_weight_boxplot("xgbt", can_vars)
 ```
 
-#### RSF
-```{r rfsrc_rec}
-feat_magnitude_long %>%
-  filter(method == "rfsrc",
-         weight != 0,
-         str_detect(variable, "(?<![PRE])REC") | 
-           str_detect(variable, "(?<![XCAN_])INSURANCE") |
-           variable %in% c("MDRDeGFR_B", "VAD")) %>%
-    filter(variable != "XCAN_MOST_RECENT_CREAT") %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-0.01, 0.5) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Recipient Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Donor
+```{r weights_xgbt_don, include = TRUE}
+create_weight_boxplot("xgbt", don_vars)
 ```
 
-```{r rfsrc_can}
-feat_magnitude_long %>%
-  filter(method == "rfsrc",
-         weight != 0,
-         str_detect(variable, "CARDIAC_ETIOLOGY") | 
-           str_detect(variable, "CAN_RACE_SRTR") | 
-           str_detect(variable, "XCAN_INSURANCE") |
-           str_detect(variable, "XCAN") | variable %in% c("bmi_calculated", "Dialysis_Baseline", "DM_Baseline",
-                                                         "PREV_MALIG", "WAIT_TIME",
-                                                         "MDRDeGFR_WL")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") +
-  xlim(-0.01, 0.1) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Candidate Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+##### Procedural
+```{r weights_xgbt_proc, include = TRUE}
+create_weight_boxplot("xgbt", proc_vars)
 ```
 
-```{r rfsrc_don}
-feat_magnitude_long %>%
-  filter(method == "rfsrc",
-         weight != 0,
-         str_detect(variable, "DON_")) %>%
-  ggplot(aes(x = weight,
-             y = reorder(variable, desc(variable)))) + 
-  # geom_point(alpha = 0.3) +
-  geom_density_ridges() +
-  geom_vline(xintercept = 0, col = "red") + 
-  xlim(-0.01, 0.1) + 
-  theme_bw() + 
-  labs(x = "Weight",
-       y = "Variable",
-       title = "Donor Characteristics") + 
-  theme(axis.text = element_text(size = 5))
+#### RFSRC
+
+##### Demographic and Clinical
+```{r weights_rfsrc_dem, include = TRUE}
+create_weight_boxplot("rfsrc", dem_vars)
 ```
+
+##### Recipient
+```{r weights_rfsrc_rec, include = TRUE}
+create_weight_boxplot("rfsrc", rec_vars)
+```
+
+##### Candidate
+```{r weights_rfsrc_can, include = TRUE}
+create_weight_boxplot("rfsrc", can_vars)
+```
+
+##### Donor
+```{r weights_rfsrc_don, include = TRUE}
+create_weight_boxplot("rfsrc", don_vars)
+```
+
+##### Procedural
+```{r weights_rfsrc_proc, include = TRUE}
+create_weight_boxplot("rfsrc", proc_vars)
+```
+
+### Significant Features Only {.tabset}
+#### Ridge
+
+##### Demographic and Clinical
+```{r weights_ridge_dem_tbl, include = TRUE}
+ridge_weight_dem <- create_weight_table("ridge", dem_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+ridge_weight_dem %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Recipient
+```{r weights_ridge_rec_tbl, include = TRUE}
+ridge_weight_rec <- create_weight_table("ridge", rec_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+ridge_weight_rec %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Candidate
+```{r weights_ridge_can_tbl, include = TRUE}
+ridge_weight_can <- create_weight_table("ridge", can_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+ridge_weight_can %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Donor
+```{r weights_ridge_don_tbl, include = TRUE}
+ridge_weight_don <- create_weight_table("ridge", don_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+ridge_weight_don %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Procedural
+```{r weights_ridge_proc_tbl, include = TRUE}
+ridge_weight_proc <- create_weight_table("ridge", proc_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+ridge_weight_proc %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### Lasso
+
+##### Demographic and Clinical
+```{r weights_lasso_dem_tbl, include = TRUE}
+lasso_weight_dem <- create_weight_table("lasso", dem_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+lasso_weight_dem %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Recipient
+```{r weights_lasso_rec_tbl, include = TRUE}
+lasso_weight_rec <- create_weight_table("lasso", rec_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+lasso_weight_rec %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Candidate
+```{r weights_lasso_can_tbl, include = TRUE}
+lasso_weight_can <- create_weight_table("lasso", can_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+lasso_weight_can %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Donor
+```{r weights_lasso_don_tbl, include = TRUE}
+lasso_weight_don <- create_weight_table("lasso", don_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+lasso_weight_don %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Procedural
+```{r weights_lasso_proc_tbl, include = TRUE}
+lasso_weight_proc <- create_weight_table("lasso", proc_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+lasso_weight_proc %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### Elastic Net
+
+##### Demographic and Clinical
+```{r weights_eln_dem_tbl, include = TRUE}
+eln_weight_dem <- create_weight_table("eln", dem_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+eln_weight_dem %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Recipient
+```{r weights_eln_rec_tbl, include = TRUE}
+eln_weight_rec <- create_weight_table("eln", rec_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+eln_weight_rec %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Candidate
+```{r weights_eln_can_tbl, include = TRUE}
+eln_weight_can <- create_weight_table("eln", can_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+eln_weight_can %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Donor
+```{r weights_eln_don_tbl, include = TRUE}
+eln_weight_don <- create_weight_table("eln", don_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+eln_weight_don %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Procedural
+```{r weights_eln_proc_tbl, include = TRUE}
+eln_weight_proc <- create_weight_table("eln", proc_vars) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+eln_weight_proc %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### Cox Boost
+
+##### All
+```{r boost_top}
+create_weight_table("gbmboost", elizabeth_vars$variable) %>%
+  filter(lb > 0 | ub < 0) %>%
+  arrange(desc(mean_weight)) %>%
+  slice_head(n = 20) %>%
+  ggplot(aes(x = forcats::fct_reorder(variable, mean_weight),
+             y = mean_weight, fill = variable)) + 
+  geom_col() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Significant Predictor Variables", 
+       y = "Average Importance") +
+  coord_flip()
+```
+
+##### Demographic and Clinical
+```{r weights_boost_dem_tbl, include = TRUE}
+gbm_weight_dem <- create_weight_table("gbmboost", dem_vars) %>%
+  filter(lb > 0 | ub < 0) 
+gbm_weight_dem %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Recipient
+```{r weights_boost_rec_tbl, include = TRUE}
+gbm_weight_rec <- create_weight_table("gbmboost", rec_vars) %>%
+  filter(lb > 0 | ub < 0) 
+gbm_weight_rec %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Candidate
+```{r weights_boost_can_tbl, include = TRUE}
+gbm_weight_can <- create_weight_table("gbmboost", can_vars) %>%
+  filter(lb > 0 | ub < 0) 
+gbm_weight_can %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Donor
+```{r weights_boost_don_tbl, include = TRUE}
+gbm_weight_don <- create_weight_table("gbmboost", don_vars) %>%
+  filter(lb > 0 | ub < 0) 
+gbm_weight_don %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Procedural
+```{r weights_boost_proc_tbl, include = TRUE}
+gbm_weight_proc <- create_weight_table("gbmboost", proc_vars) %>%
+  filter(lb > 0 | ub < 0) 
+gbm_weight_proc %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### XGBL
+
+##### Demographic and Clinical
+```{r weights_xgbl_dem_tbl, include = TRUE}
+xgbl_weight_dem <- create_weight_table("xgbl", dem_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_dem %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Recipient
+```{r weights_xgbl_rec_tbl, include = TRUE}
+xgbl_weight_rec <- create_weight_table("xgbl", rec_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_rec %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Candidate
+```{r weights_xgbl_can_tbl, include = TRUE}
+xgbl_weight_can <- create_weight_table("xgbl", can_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_can %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Donor
+```{r weights_xgbl_don_tbl, include = TRUE}
+xgbl_weight_don <- create_weight_table("xgbl", don_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_don %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Procedural
+```{r weights_xgbl_proc_tbl, include = TRUE}
+xgbl_weight_proc <- create_weight_table("xgbl", proc_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_proc %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### XGBoost Tree
+
+##### All
+```{r xgbt_top}
+create_weight_table("xgbt", elizabeth_vars$variable) %>%
+  filter(lb > 0 | ub < 0) %>%
+  arrange(desc(mean_weight)) %>%
+  slice_head(n = 20) %>%
+  ggplot(aes(x = forcats::fct_reorder(variable, mean_weight),
+             y = mean_weight, fill = variable)) + 
+  geom_col() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Significant Predictor Variables", 
+       y = "Average Importance") +
+  coord_flip()
+```
+
+##### Demographic and Clinical
+```{r weights_xbgt_dem_tbl, include = TRUE}
+xgbt_weight_dem <- create_weight_table("xgbt", dem_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_dem %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Recipient
+```{r weights_xgbt_rec_tbl, include = TRUE}
+xgbt_weight_rec <- create_weight_table("xgbt", rec_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_rec %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Candidate
+```{r weights_xgbt_can_tbl, include = TRUE}
+xgbt_weight_can <- create_weight_table("xgbt", can_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_can %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Donor
+```{r weights_xgbt_don_tbl, include = TRUE}
+xgbt_weight_don <- create_weight_table("xgbt", don_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_don %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Procedural
+```{r weights_xgbt_proc_tbl, include = TRUE}
+xgbt_weight_proc <- create_weight_table("xgbt", proc_vars) %>%
+  filter(lb > 0 | ub < 0) 
+xgbl_weight_proc %>%
+  kbl() %>%
+  kable_styling()
+```
+
+#### RFSRC
+
+##### All
+```{r rfsrc_top}
+create_weight_table("rfsrc", elizabeth_vars$variable) %>%
+  filter(lb > 0 | ub < 0) %>%
+  arrange(desc(mean_weight)) %>%
+  slice_head(n = 20) %>%
+  ggplot(aes(x = forcats::fct_reorder(variable, mean_weight),
+             y = mean_weight, fill = variable)) + 
+  geom_col() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Significant Predictor Variables", 
+       y = "Average Importance") +
+  coord_flip()
+```
+
+##### Demographic and Clinical
+```{r weights_rfsrc_dem_tbl, include = TRUE}
+rfsrc_weight_dem <- create_weight_table("rfsrc", dem_vars) %>%
+  filter(lb > 0 | ub < 0) 
+rfsrc_weight_dem %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Recipient
+```{r weights_rfsrc_rec_tbl, include = TRUE}
+rfsrc_weight_rec <- create_weight_table("rfsrc", rec_vars) %>%
+  filter(lb > 0 | ub < 0) 
+rfsrc_weight_rec %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Candidate
+```{r weights_rfsrc_can_tbl, include = TRUE}
+rfsrc_weight_can <- create_weight_table("rfsrc", can_vars) %>%
+  filter(lb > 0 | ub < 0) 
+rfsrc_weight_can %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Donor
+```{r weights_rfsrc_don_tbl, include = TRUE}
+rfsrc_weight_don <- create_weight_table("rfsrc", don_vars) %>%
+  filter(lb > 0 | ub < 0) 
+rfsrc_weight_don %>%
+  kbl() %>%
+  kable_styling()
+```
+
+##### Procedural
+```{r weights_rfsrc_proc_tbl, include = TRUE}
+rfsrc_weight_proc <- create_weight_table("rfsrc", proc_vars) %>%
+  filter(lb > 0 | ub < 0) 
+rfsrc_weight_proc %>%
+  kbl() %>%
+  kable_styling()
+```
+
+### Shared Across Ridge, Lasso, ELN {.tabset}
+
+#### Top 20 Strongest Overall
+```{r}
+all_ridge <- create_weight_table("ridge", elizabeth_vars$variable) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+all_lasso <- create_weight_table("lasso", elizabeth_vars$variable) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+all_eln <- create_weight_table("eln", elizabeth_vars$variable) %>%
+  filter(abs(lb) > 1,
+         abs(ub) > 1) 
+
+shared_vars <- Reduce(intersect, list(all_ridge$variable,
+                                      all_lasso$variable,
+                                      all_eln$variable))
+  
+common_ridge <- all_ridge %>%
+  filter(variable %in% shared_vars)
+common_lasso <- all_ridge %>%
+  filter(variable %in% shared_vars)
+common_eln <- all_ridge %>%
+  filter(variable %in% shared_vars)
+  
+tibble(variable = common_ridge$variable,
+       shared_mean_hr = rowMeans(cbind(common_ridge$mean_hr,
+                                       common_lasso$mean_hr,
+                                       common_eln$mean_hr)),
+       shared_lb = rowMeans(cbind(common_ridge$lb,
+                                  common_lasso$lb,
+                                  common_eln$lb)),
+       shared_ub = rowMeans(cbind(common_ridge$ub,
+                                  common_lasso$ub,
+                                  common_eln$ub))) %>%
+  arrange(desc(shared_mean_hr)) %>%
+  slice_head(n = 20) %>%
+  ggplot(aes(x = forcats::fct_reorder(variable, shared_mean_hr),
+             y = shared_mean_hr, col = variable)) + 
+  geom_point() +
+  geom_linerange(aes(ymin = shared_lb, ymax = shared_ub)) + 
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Significant Predictor Variables", 
+       y = "Average Hazard Ratio") +
+  coord_flip()
+```
+
+#### Demographic and Clinical
+```{r share_dem}
+intersect(ridge_weight_dem$variable, intersect(lasso_weight_dem$variable, eln_weight_dem$variable))
+```
+
+#### Recipient
+```{r share_rec}
+intersect(ridge_weight_rec$variable, intersect(lasso_weight_rec$variable, eln_weight_rec$variable))
+```
+
+#### Candidate
+```{r share_can}
+intersect(ridge_weight_can$variable, intersect(lasso_weight_can$variable, eln_weight_can$variable))
+```
+
+#### Donor
+```{r share_don}
+intersect(ridge_weight_don$variable, intersect(lasso_weight_don$variable, eln_weight_don$variable))
+```
+
+#### Procedural
+```{r share_proc}
+intersect(ridge_weight_proc$variable, intersect(lasso_weight_proc$variable, eln_weight_proc$variable))
+```
+
+### Shared Across ML {.tabset}
+
+#### Top 20 Strongest Overall
+```{r}
+all_boost <- create_weight_table("gbmboost", elizabeth_vars$variable) %>%
+  filter(lb > 0 | ub < 0) 
+all_xgbl <- create_weight_table("xgbl", elizabeth_vars$variable) %>%
+  filter(lb > 0 | ub < 0) 
+all_xgbt <- create_weight_table("eln", elizabeth_vars$variable) %>%
+  filter(lb > 0 | ub < 0) 
+all_rfsrc <- create_weight_table("rfsrc", elizabeth_vars$variable) %>%
+  filter(lb > 0 | ub < 0) 
+
+shared_vars <- Reduce(intersect, list(all_boost$variable,
+                                      all_xgbl$variable,
+                                      all_xgbt$variable,
+                                      all_rfsrc$variable))
+  
+common_boost <- all_boost %>%
+  filter(variable %in% shared_vars)
+common_xgbl <- all_xgbl %>%
+  filter(variable %in% shared_vars)
+common_xgbt <- all_xgbt %>%
+  filter(variable %in% shared_vars)
+common_rfsrc <- all_rfsrc %>%
+  filter(variable %in% shared_vars)
+  
+tibble(variable = common_boost$variable,
+       shared_mean_weight = rowMeans(cbind(common_boost$mean_weight,
+                                           common_xgbl$mean_weight,
+                                           common_xgbt$mean_weight,
+                                           common_rfsrc$mean_weight))) %>%
+  arrange(desc(shared_mean_weight)) %>%
+  slice_head(n = 20) %>%
+  ggplot(aes(x = forcats::fct_reorder(variable, shared_mean_weight),
+             y = shared_mean_weight, fill = variable)) + 
+  geom_col() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Significant Predictor Variables", 
+       y = "Average Importance") +
+  coord_flip()
+```
+
+#### Demographic and Clinical
+```{r share2_dem}
+intersect(gbm_weight_dem$variable, 
+          intersect(xgbt_weight_dem$variable,
+                    intersect(xgbl_weight_dem$variable, rfsrc_weight_dem$variable)))
+```
+
+#### Recipient
+```{r share2_rec}
+intersect(gbm_weight_rec$variable, 
+          intersect(xgbt_weight_rec$variable,
+                    intersect(xgbl_weight_rec$variable, rfsrc_weight_rec$variable)))
+```
+
+#### Candidate
+```{r share2_can}
+intersect(gbm_weight_can$variable, 
+          intersect(xgbt_weight_can$variable,
+                    intersect(xgbl_weight_can$variable, rfsrc_weight_can$variable)))
+```
+
+#### Donor
+```{r share2_don}
+intersect(gbm_weight_don$variable, 
+          intersect(xgbt_weight_don$variable,
+                    intersect(xgbl_weight_don$variable, rfsrc_weight_don$variable)))
+```
+
+#### Procedural
+```{r share2_proc}
+intersect(gbm_weight_proc$variable, 
+          intersect(xgbt_weight_proc$variable,
+                    intersect(xgbl_weight_proc$variable, rfsrc_weight_proc$variable)))
+```
+
